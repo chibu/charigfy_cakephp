@@ -1,4 +1,4 @@
 
-.h2 Status
+.h3 Status
 
 Still in beta so use at own risk. Should have stable version very soon!
