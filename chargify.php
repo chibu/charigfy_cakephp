@@ -39,8 +39,9 @@ class ChargifyComponent extends Object {
 	*
 	* @var string
 	* @access public
+	* https://yourdomain.chargify.com/
 	*/
-	var $chargifyUrl = 'https://yourdomain.chargify.com/';
+	var $chargifyUrl = '';
 
 	/**
 	*  REST format
@@ -57,31 +58,97 @@ class ChargifyComponent extends Object {
 	* Startup. Brpp. Brrrrpppppp. BRRPPPPPPPPPP!!!
 	*/
 	function initialize(&$controller){
-	 $this->data = $controller->data;
-	  $this->params = $controller->params;
+		$this->data = $controller->data;
+		$this->params = $controller->params;
+		$this->controller =& $controller;
+		
+		if (empty($this->apiKey))
+			$this->apiKey = Configure::read('Chargify.apiKey');
+		if (empty($this->password))
+			$this->password = Configure::read('Chargify.passowrd');
+		if (empty($this->siteSharedKey))
+			$this->siteSharedKey = Configure::read('Chargify.siteSharedKey');
+		if (empty($this->chargifyUrl))
+			$this->chargifyUrl = Configure::read('Chargify.chargifyUrl');
 	}
 
-	/**
-	* List Products
-	* 
-	* @return array of current prodcuts 
-	*/
-	function listProducts() {
-	  $result = $this->sendRequest('products');
-	    return $result;
-	  }
-
-
-	/**
-	* List subscriptions
-	* 
-	* @return array of current subscriptions 
-	*/
-	function listSubscriptions() {
-	  $result = $this->sendRequest('subscriptions');
-	  return $result;
+	function __call($method, $params) {
+		$method = strtolower($method);
+		
+		$data = '';
+		$result = '';
+		
+		$id = array_key_exists(0, $params) ? $params[0] : '';
+		$data = array_key_exists(1, $params) ? $params[1] : '';
+		
+		$matches = array();
+		
+		/* List Customers, Products, or Subscriptions */
+		if (preg_match('/(list)(customer|product|subscription)s?/i', $method, $matches)) {
+			$uri = $matches[2] . 's';
+			$result = $this->sendRequest($uri, 'GET', $data);
+		}
+		/* Read/Show Customers, Products, or Subscriptions */
+		else if(preg_match('/(find|get|read|show)(customer|product|subscription)s?(by(.*))?/i', $method, $matches)) {
+			$uri = $matches[2] . 's';
+			
+			$field = array_key_exists(4, $matches) ? $matches[4] : 'id';
+			
+			switch($matches[2]) {
+				case 'customer':
+					if ($field == 'reference') {
+						$uri .= '/lookup';
+						$data = 'reference=' . urlencode($id);
+					}
+					break;
+					
+				case 'product':
+					if ($field == 'handle') {
+						$uri .= '/handle/' . urlencode($id);
+					}
+					break;
+			}
+			
+			if ($uri == $matches[2] . 's') {
+				$uri .= '/' . urlencode($params[0]);
+			}
+			$result = $this->sendRequest($uri, 'GET', $data);
+		}
+		
+		/* Create Customer, Product, or Subscription */
+		if (preg_match('/(create|new)(customer|product|subscription)s?/i', $method, $matches)) {
+			$uri = $matches[2] . 's';
+			
+			/* Customer does not yet have an id */
+			if (!$data) $data = $id;
+			
+			$result = $this->sendRequest($uri, 'POST', $data);
+		}
+		
+		/* Edit/Update Customers, Products, or Subscriptions */
+		if (preg_match('/(edit|update|save)(customer|product|subscription)s?/i', $method, $matches)) {
+			$uri = $matches[2] . 's';
+			
+			if (!$data) {
+				$data = $id;
+				if (array_key_exists('id', $data)) {
+					$id = $data['id'];
+				}
+			}
+			
+			$uri .= '/' . $id;
+			$result = $this->sendRequest($uri, 'PUT', $data);
+		}
+		
+		/* Decode the JSON response. */
+		if ($this->restFormat != 'xml') {
+			return json_decode($result,true);
+		}
+		else { /* Do something with the xml... */ }
+		
 	}
-
+	
+	
 	/**
 	* Delete a subscription
 	* 
@@ -89,32 +156,7 @@ class ChargifyComponent extends Object {
 	* @return array of canceled subscription
 	*/
 	function deleteSubscription($id) {
-	  $result = $this->sendRequest('subscriptions/'.$id);
-	 return $result;
-	}
-
-
-	/**
-	* read one subscription
-	* 
-	* @param int $id Chargify subscription id to read
-	* @return array of canceled subscription
-	*/
-	function readSubscription($id) {
 		$result = $this->sendRequest('subscriptions/'.$id);
-		return $result;
-	}
-
-
-	/**
-	* create subscription
-	* 
-	* @param int $id Chargify subscription id to read
-	* @return array of canceled subscription
-	*/
-	function createSubscription() {
-		$data = $this->buildSubscription(array()); 
-		$result = $this->sendRequest('subscriptions','POST',$data);
 		return $result;
 	}
 
@@ -130,18 +172,6 @@ class ChargifyComponent extends Object {
 	function changeProduct($id,$data) {
 		$result = $this->sendRequest('subscriptions/'.$id,'PUT',$data);
 	  	return $result;
-	}
-
-	/**
-	 * update subscription
-	 * 
-	 * @param int $id Chargify subscription id to read
-	 * @param $subscription mixed JSON/XML subscription
-	 * @return array of canceled subscription
-	 */
-	function updateSubscription($id,$subscription) { 
-		$result = $this->sendRequest('subscriptions/'.$id,'PUT',$subscription);
-		return $result;
 	}
 
 	/**
@@ -167,7 +197,7 @@ class ChargifyComponent extends Object {
    
 		//$extension = strtoupper($format) == 'XML' ? '.xml' : '.json';
 		$targetUrl = $this->chargifyUrl . $uri . '.' . $this->restFormat;
-
+		
 		// Curly wurly!
 		$ch = curl_init();
 
@@ -181,13 +211,16 @@ class ChargifyComponent extends Object {
 
 		// XML? Pah! no thanks (but just incase!)
 		if ($this->restFormat == 'xml') {
-		curl_setopt($ch, CURLOPT_HTTPHEADER, array(
-		  'Content-Type: application/xml',
-		  'Accept: application/xml'));
-		} else {
-		curl_setopt($ch, CURLOPT_HTTPHEADER, array(
-		  'Content-Type: application/json',
-		  'Accept: application/json'));
+			curl_setopt($ch, CURLOPT_HTTPHEADER, array(
+			  'Content-Type: application/xml',
+			  'Accept: application/xml'));
+		}
+		else {
+			curl_setopt($ch, CURLOPT_HTTPHEADER, array(
+			  'Content-Type: application/json',
+			  'Accept: application/json'));
+			
+			$data = json_encode($data);
 		}
 
 		curl_setopt($ch, CURLOPT_USERPWD, $this->apiKey . ':' . $this->password);
@@ -205,6 +238,9 @@ class ChargifyComponent extends Object {
 		elseif($method != 'GET') {
 			curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
 		}
+		else if (!empty($data)){
+			curl_setopt($ch, CURLOPT_URL, $targetUrl . '?' . $data);
+		}
 
 		curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
 		curl_setopt($ch, CURLOPT_TIMEOUT, 30);
@@ -214,7 +250,8 @@ class ChargifyComponent extends Object {
 		$result->response = curl_exec($ch);
 		$result->code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 		$result->meta = curl_getinfo($ch);
-
+		//print_r($result->meta);
+		
 		$curl_error = ($result->code > 0 ? null : curl_error($ch) . ' (' . curl_errno($ch) . ')');
 
 		curl_close($ch);
